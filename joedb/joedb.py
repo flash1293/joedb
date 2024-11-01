@@ -1,6 +1,8 @@
 import struct
 from ppretty import ppretty
+from .clp import extract_pattern, rehydrate_message
 import pyzstd
+import humanize
 import io
 
 
@@ -148,26 +150,31 @@ def run_length_encode(data):
 class JoeDB:
     MAGIC_HEADER = b'\xf0\x9f\x90\xbf\xef\xb8\x8f\x6a\x6f\x65\x64\x62'  # 🐿️joedb
 
-    def __init__(self):
+    def __init__(self, use_clp=True):
         self.columns = {}
-        self.tries = {}
+        self.tries: dict[str, Trie] = {}
         self.record_count = 0
+        self.use_clp = use_clp
 
     def insert(self, json_object):
         """Insert a JSON object into the database."""
         flat_data = flatten_json(json_object)
-        keys = list(flat_data.keys())
+        keys = set(flat_data.keys())
 
         for key, value in flat_data.items():
-            if key not in self.columns:
-                self.columns[key] = []
-                # append leading zeros in case there are records already
-                self.columns[key].extend([0] * self.record_count)
-                self.tries[key] = Trie()
-
-            # Insert into trie and get the index
-            index = self.tries[key].insert(value if isinstance(value, str) else str(value))
-            self.columns[key].append(index)
+            pattern, vars = extract_pattern(value, key) if self.use_clp else (value, {})
+            # actual columns are key plus the keys of the vars object
+            local_keys = [key] + list(vars.keys())
+            keys.update(local_keys)
+            for local_key in local_keys:
+                if local_key not in self.columns:
+                    self.columns[local_key] = []
+                    self.columns[local_key].extend([0] * self.record_count)
+                    self.tries[local_key] = Trie()
+                # Insert into trie and get the index
+                local_value = pattern if local_key == key else vars[local_key]
+                index = self.tries[local_key].insert(local_value if isinstance(local_value, str) else str(local_value))
+                self.columns[local_key].append(index)
 
         for key in self.columns:
             if not key in keys:
@@ -206,13 +213,14 @@ class JoeDB:
                 f.write(struct.pack('>I', len(compressed_bytes)))  # Write 4-byte compressed length
                 f.write(compressed_bytes)  # Write compressed data
                 self.write_counter += compressed_data.tell()
-                print("Wrote", compressed_data.tell(), "bytes for trie", key)
+                print("Wrote", humanize.naturalsize(compressed_data.tell()), "bytes for trie", key)
             f.write(b'\x00')  # End of tries marker
 
-            print("Wrote", self.write_counter, "bytes for tries")
+            print("Wrote", humanize.naturalsize(self.write_counter), "bytes for tries")
 
             # Write the columns with RLE
             for key, column in self.columns.items():
+                print("Writing column", key)
                 self.write_counter = 0
                 rename_map = rename_maps[key]
                 column = [rename_map.get(value, value) for value in column]
@@ -243,7 +251,7 @@ class JoeDB:
 #                    f.write(value.to_bytes(value_byte_size, byteorder='big'))
 #                    f.write(length.to_bytes(length_byte_size, byteorder='big'))
 #                    self.write_counter += value_byte_size + length_byte_size
-                print("Wrote", compressed_data.tell(), "bytes for column", key)
+                print("Wrote", humanize.naturalsize(compressed_data.tell()), "bytes for column", key)
 
     def _write_trie(self, f, node):
         """Recursively write a trie to a file in depth-first order."""
@@ -265,7 +273,7 @@ class JoeDB:
 
             # Read tries
             self.tries = {}
-            self.trie_value_maps = {}
+            self.trie_value_maps: dict[str, dict[int, str]] = {}
             while True:
                 key = self._read_null_terminated_string(f)
                 if not key:  # End of tries marker
@@ -306,16 +314,23 @@ class JoeDB:
                         column_data.extend([value] * length)
                     self.columns[key] = column_data
 
-
+           # Split out CLP columns (start with var_)
+            clp_columns = {key: self.columns[key] for key in self.columns if key.startswith('var_')}
+            real_columns = {key: self.columns[key] for key in self.columns if not key.startswith('var_')}
+            
 
             # Reconstruct JSON objects
             json_objects = []
             for i in range(record_count):
                 json_object = {}
-                for key, column in self.columns.items():
+                # Get clp values for the current record
+                clp_values = {key: self.trie_value_maps[key].get(column[i], None) for key, column in clp_columns.items()}
+                for key, column in real_columns.items():
                     value_index = column[i]
                     if value_index != 0:  # Zero means no value
                         value = self.trie_value_maps[key].get(value_index, None)
+                        value = rehydrate_message(value, clp_values) if value else value
+
                         # Resolve dots to nested objects
                         [*parts, key] = key.split('.')
                         json_object_to_set = json_object

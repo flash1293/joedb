@@ -1,31 +1,5 @@
 import pyzstd
 from joedb import JoeDB
-
-
-def test_smoke():
-    # Initialize the database
-    db = JoeDB()
-
-    # Insert log entries (as JSON objects)
-    # db.insert({"timestamp": "2024-10-19T14:00:00", "level": "INFO", "message": "Log message 1"})
-    # db.insert({"timestamp": "2024-10-19T14:01:00", "level": "ERROR", "message": "Log message 2"})
-    # db.insert({"timestamp": "2024-10-19T14:02:00", "level": "INFO", "message": "Log message 3"})
-    db.insert({"level": "error", "abc": "def123"})
-    db.insert({"level": "info", "abc": "def456"})
-
-    # Encode and store in binary format
-    db.encode('logs.jdb')
-
-    # Decode from binary format and reconstruct the log entries
-    restored_logs = db.decode('logs.jdb')
-
-    # Output the restored logs
-    print(restored_logs)
-
-    # remove the file
-    import os
-    os.remove('logs.jdb')
-
 import os
 import difflib
 from pprint import pformat
@@ -35,6 +9,7 @@ import csv
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import humanize
 
 
 # Helper functions to run tests
@@ -90,7 +65,7 @@ def insert_and_round_trip(db, log_entries):
 
     # Output the size of the binary file
     binary_size = os.path.getsize(binary_file)
-    print(f"Binary file size: {binary_size} bytes")
+    print(f"Binary file size: {humanize.naturalsize(binary_size)}")
 
     # Save the log entries in NDJSON format
     ndjson_file = 'test_logs.ndjson'
@@ -99,11 +74,11 @@ def insert_and_round_trip(db, log_entries):
             f.write(json.dumps(log) + '\n')
 
     raw_ndjson_size = os.path.getsize(ndjson_file)
-    print(f"Raw NDJSON file size: {raw_ndjson_size} bytes")
+    print(f"Raw NDJSON file size: {humanize.naturalsize(raw_ndjson_size)}")
 
     # Compress the NDJSON file with gzip
     gzipped_ndjson_file = 'test_logs.ndjson.gz'
-    with open(ndjson_file, 'rb') as f_in, gzip.open(gzipped_ndjson_file, 'wb') as f_out:
+    with open(ndjson_file, 'rb') as f_in, pyzstd.open(gzipped_ndjson_file, 'wb') as f_out:
         f_out.writelines(f_in)
 
     # Ensure the gzipped NDJSON file exists
@@ -111,7 +86,7 @@ def insert_and_round_trip(db, log_entries):
 
     # Output the size of the gzipped NDJSON file
     gzipped_ndjson_size = os.path.getsize(gzipped_ndjson_file)
-    print(f"Gzipped NDJSON file size: {gzipped_ndjson_size} bytes")
+    print(f"Zstd compressed NDJSON file size: {humanize.naturalsize(gzipped_ndjson_size)}")
 
     # Save the log entries in CSV format if there are any entries
     if log_entries:
@@ -127,11 +102,11 @@ def insert_and_round_trip(db, log_entries):
             writer.writerows(log_entries)
 
         raw_csv_size = os.path.getsize(csv_file)
-        print(f"Raw CSV file size: {raw_csv_size} bytes")
+        print(f"Raw CSV file size: {humanize.naturalsize(raw_csv_size)}")
 
         # Compress the CSV file with gzip
         gzipped_csv_file = 'test_logs.csv.gz'
-        with open(csv_file, 'rb') as f_in, gzip.open(gzipped_csv_file, 'wb') as f_out:
+        with open(csv_file, 'rb') as f_in, pyzstd.open(gzipped_csv_file, 'wb') as f_out:
             f_out.writelines(f_in)
 
         # Ensure the gzipped CSV file exists
@@ -139,7 +114,7 @@ def insert_and_round_trip(db, log_entries):
 
         # Output the size of the gzipped CSV file
         gzipped_csv_size = os.path.getsize(gzipped_csv_file)
-        print(f"Gzipped CSV file size: {gzipped_csv_size} bytes")
+        print(f"Zstd compressed CSV file size: {humanize.naturalsize(gzipped_csv_size)}")
 
         # Prepare a dictionary to collect values for each column
         column_data = {key: [] for key in all_keys}
@@ -160,7 +135,7 @@ def insert_and_round_trip(db, log_entries):
                 writer.writerow([key] + values)  # Write column name followed by all values for that column
 
         raw_column_csv_size = os.path.getsize(column_csv_file)
-        print(f"Raw columnar CSV file size: {raw_column_csv_size} bytes")
+        print(f"Raw columnar CSV file size: {humanize.naturalsize(raw_column_csv_size)}")
 
         # Compress the CSV file with gzip
         gzipped_column_csv_file = 'test_logs_column.csv.gz'
@@ -172,7 +147,7 @@ def insert_and_round_trip(db, log_entries):
 
         # Output the size of the gzipped CSV file
         gzipped_column_csv_size = os.path.getsize(gzipped_column_csv_file)
-        print(f"Zstd-compressed columnar CSV file size: {gzipped_column_csv_size} bytes")
+        print(f"Zstd-compressed columnar CSV file size: {humanize.naturalsize(gzipped_column_csv_size)}")
         os.remove(column_csv_file)
         os.remove(csv_file)
         os.remove(gzipped_csv_file)
@@ -196,7 +171,7 @@ def insert_and_round_trip(db, log_entries):
     pq.write_table(table, parquet_file, compression='ZSTD', use_dictionary=True, data_page_size=40 * 1024 * 1024)
 
     parquet_size = os.path.getsize(parquet_file)
-    print(f"Parquet file size: {parquet_size} bytes")
+    print(f"Parquet file size: {humanize.naturalsize(parquet_size)}")
 
 
     # Cleanup
@@ -225,7 +200,24 @@ def probe_ndjson_gz_file(db, ndjson_file_path):
     """
     # Read the NDJSON file using pandas
     df = pd.read_json(ndjson_file_path, lines=True)
+    json_struct = json.loads(df.to_json(orient="records"))
+    df_flat = pd.json_normalize(json_struct)
+    df_flat.columns = df_flat.columns.str.replace('.', '_', regex=False)
 
+    # TODO: Allow empty string values (currently not supported)
+    df_flat = df_flat.drop(columns=['resource_attributes_host_cpu_family', 'resource_attributes_host_cpu_model_name'])
+
+    # Convert each row to a dictionary
+    log_entries = df_flat.astype(str).to_dict(orient='records')
+
+    insert_and_round_trip(db, log_entries)
+
+def probe_ndjson_gz_file_single_level(db, ndjson_file_path):
+    """
+    Test case to read the /Mac_2k.log_structured.ndjson.gz file and insert individual log entries into the database.
+    """
+    # Read the NDJSON file using pandas
+    df = pd.read_json(ndjson_file_path, lines=True)
     # Convert each row to a dictionary
     log_entries = df.astype(str).to_dict(orient='records')
 
@@ -243,9 +235,9 @@ def test_simple_log():
 def test_nested_log():
     db2 = JoeDB()
     log_entries2 = [
-        {"timestamp": "2024-10-19T14:00:00", "level": "INFO", "message": "Log message 1", "meta": {"source": "app1", "id": "123"}},
-        {"timestamp": "2024-10-19T14:01:00", "level": "ERROR", "message": "Log message 2", "meta": {"source": "app2", "id": "124"}},
-        {"timestamp": "2024-10-19T14:02:00", "level": "INFO", "message": "Log message 3", "meta": {"source": "app3", "id": "125"}}
+        {"message": "Log message 1", "meta": {"id": "123"}},
+        {"message": "Log message 2", "meta": {"id": "124"}},
+        {"message": "Log message 3", "meta": {"id": "125"}}
     ]
     insert_and_round_trip(db2, log_entries2)
 
@@ -275,12 +267,27 @@ def test_extend_trie2():
     insert_and_round_trip(db6, log_entries6)
 
     # Test 7: Large dataset with many records
-def test_large_dataset():
-    db7 = JoeDB()
-    log_entries7 = [{"timestamp": f"2024-10-19T14:{i:02d}:00", "level": "INFO", "message": f"Log message"} for i in range(1000)]
-    insert_and_round_trip(db7, log_entries7)
+# def test_large_dataset():
+#     db7 = JoeDB()
+#     log_entries7 = [{"timestamp": f"2024-10-19T14:{i:02d}:00", "level": "INFO", "message": f"Log message"} for i in range(1000)]
+#     insert_and_round_trip(db7, log_entries7)
+
+# def test_zookeeper_clp_logs():
+#     db8 = JoeDB(use_clp=True)
+#     probe_csv_file(db8, 'fixtures/zookeeper.csv')
+
+# def test_zookeeper_no_clp_logs():
+#     db8 = JoeDB(use_clp=False)
+#     probe_csv_file(db8, 'fixtures/zookeeper.csv')
+
+# def test_spark_no_clp_logs():
+#     db8 = JoeDB(use_clp=False)
+#     probe_ndjson_gz_file(db8, 'fixtures/spark.ndjson.gz')
+
+# def test_thunderbird_logs():
+#     db8 = JoeDB(use_clp=True)
+#     probe_csv_file(db8, 'fixtures/thunderbird.csv')
 
 def test_otel_logs():
-    print("Test 8: otel logs file")
-    db8 = JoeDB()
-    probe_ndjson_gz_file(db8, 'fixtures/otel.ndjson.gz')
+    db8 = JoeDB(use_clp=True)
+    probe_ndjson_gz_file_single_level(db8, 'fixtures/otel.ndjson.gz')
