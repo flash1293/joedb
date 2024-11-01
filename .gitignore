@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Poetry-specific files
+poetry.lock
+
+# Virtual environment
+.env/
+.venv/
+env/
+venv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test cache and coverage reports
+.coverage
+.tox/
+.nox/
+.cache/
+coverage.xml
+htmlcov/
+*.cover
+
+# Pytest and other test outputs
+.pytest_cache/
+.cache/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs and environment files
+*.log
+.env.local
+.env.*
+
+# MyPy type checking
+.mypy_cache/
+dmypy.json
+dmypy.sock
+
+# Python-language server settings
+.pylint.d/
