@@ -3,7 +3,7 @@ import re
 def extract_pattern(log_message, root):
     # Extended regex patterns for timestamps, numbers, hex values, IPs, and floating-point numbers
     regex_patterns = {
-        'timestamp': r'\b(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|\d{2}:\d{2}:\d{2}|\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}|\d{2}-\w{3}-\d{4} \d{2}:\d{2}:\d{2}|\w{3} \d{2}, \d{4} \d{2}:\d{2} [APMapm]{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z?)\b',
+        'timestamp': r'\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?\b',
         'number': r'\b\d+\b',
         'time': r'\b\d+s\b',
         'hex': r'\b(0x)?[0-9a-fA-F]+\b',
@@ -20,7 +20,7 @@ def extract_pattern(log_message, root):
         if total_vars >= 10:
             return match.group(0)  # Keep original text if variable limit reached
         
-        var_name = f"var_{root}_timestamp{var_count['timestamp']}"
+        var_name = f"var_{root}_{var_count['timestamp']}_timestamp"
         variables[var_name] = match.group(0)
         var_count['timestamp'] += 1
         total_vars += 1
@@ -45,7 +45,7 @@ def extract_pattern(log_message, root):
                 continue
             
             if re.fullmatch(regex, token):
-                var_name = f"var_{root}_{var_type}{var_count[var_type]}"
+                var_name = f"var_{root}_{var_count[var_type]}_{var_type}"
                 variables[var_name] = token
                 pattern.append(f'{{{var_name}}}')
                 var_count[var_type] += 1

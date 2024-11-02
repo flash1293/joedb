@@ -1,3 +1,4 @@
+import datetime
 import struct
 from ppretty import ppretty
 from .clp import extract_pattern, rehydrate_message
@@ -116,6 +117,7 @@ class Trie:
 
         dfs(self.root)
 
+COMPRESSION_LEVEL = 15
 
 def flatten_json(data, parent_key='', sep='.'):
     """Flatten nested JSON objects."""
@@ -149,9 +151,14 @@ def run_length_encode(data):
 
 class JoeDB:
     MAGIC_HEADER = b'\xf0\x9f\x90\xbf\xef\xb8\x8f\x6a\x6f\x65\x64\x62'  # 🐿️joedb
+    TYPE_STRING = 0x01  # Column type byte for string columns
+    TYPE_NUMBER = 0x02  # Column type byte for number columns
+    TYPE_TIMESTAMP = 0x03  # Column type byte for number columns
+
 
     def __init__(self, use_clp=True):
         self.columns = {}
+        self.column_types = {}
         self.tries: dict[str, Trie] = {}
         self.record_count = 0
         self.use_clp = use_clp
@@ -167,13 +174,33 @@ class JoeDB:
             local_keys = [key] + list(vars.keys())
             keys.update(local_keys)
             for local_key in local_keys:
+                is_number_column = False if local_key not in self.column_types else self.column_types[local_key] == self.TYPE_NUMBER
+                is_timestamp_column = False if local_key not in self.column_types else self.column_types[local_key] == self.TYPE_TIMESTAMP
                 if local_key not in self.columns:
                     self.columns[local_key] = []
                     self.columns[local_key].extend([0] * self.record_count)
-                    self.tries[local_key] = Trie()
+                    # a number column key always starts with var_ and ends with _number<int>
+                    is_timestamp_column = local_key.startswith('var_') and local_key.endswith('_timestamp')
+                    is_number_column = is_timestamp_column or local_key.startswith('var_') and local_key.endswith('_number')
+                    if is_timestamp_column:
+                        self.column_types[local_key] = self.TYPE_TIMESTAMP
+                    elif is_number_column:
+                        self.column_types[local_key] = self.TYPE_NUMBER
+                    else:
+                        self.column_types[local_key] = self.TYPE_STRING
+                    if not is_number_column:
+                        self.tries[local_key] = Trie()
                 # Insert into trie and get the index
                 local_value = pattern if local_key == key else vars[local_key]
-                index = self.tries[local_key].insert(local_value if isinstance(local_value, str) else str(local_value))
+                if not is_number_column and not is_timestamp_column:
+                    # Use Trie for strings
+                    index = self.tries[local_key].insert(local_value if isinstance(local_value, str) else str(local_value))
+                elif is_timestamp_column:
+                    # convert iso timestamp to unix timestamp
+                    index = int(datetime.datetime.fromisoformat(local_value).timestamp())
+                else:
+                    # Directly store number for delta encoding
+                    index = local_value
                 self.columns[local_key].append(index)
 
         for key in self.columns:
@@ -187,6 +214,8 @@ class JoeDB:
         self.write_counter = 0
         # =============== PRINT:THE:TREE =================
         # print(ppretty(self.tries, depth=20))
+        print(ppretty(self.columns, depth=20))
+        print(ppretty(self.column_types, depth=20))
         with open(file_path, 'wb') as f:
             # Write the magic header
             f.write(self.MAGIC_HEADER)
@@ -203,17 +232,24 @@ class JoeDB:
             rename_maps = {key: trie.rename_indices() for key, trie in self.tries.items()}
 
             # Write the tries
-            for key, trie in self.tries.items():
-                f.write(key.encode('utf-8') + b'\x00')  # Null-terminated key
-                compressed_data = io.BytesIO()
-                with pyzstd.ZstdFile(filename=compressed_data, mode='wb') as gz:
-                  self._write_trie(gz, trie.root)
-                  gz.write(b'\x00')
-                compressed_bytes = compressed_data.getvalue()
-                f.write(struct.pack('>I', len(compressed_bytes)))  # Write 4-byte compressed length
-                f.write(compressed_bytes)  # Write compressed data
-                self.write_counter += compressed_data.tell()
-                print("Wrote", humanize.naturalsize(compressed_data.tell()), "bytes for trie", key)
+            for key, column in self.columns.items():
+                # Write column type
+                f.write(struct.pack('B', self.column_types[key]))
+
+                # Write column name with null terminator
+                f.write(key.encode('utf-8') + b'\x00')
+
+                if self.column_types[key] == self.TYPE_STRING:
+                    compressed_data = io.BytesIO()
+                    with pyzstd.ZstdFile(filename=compressed_data, mode='wb', level_or_option=COMPRESSION_LEVEL) as gz:
+                        self._write_trie(gz, self.tries[key].root)
+                        gz.write(b'\x00')
+                    compressed_bytes = compressed_data.getvalue()
+                    f.write(struct.pack('>I', len(compressed_bytes)))
+                    f.write(compressed_bytes)
+
+                    self.write_counter += compressed_data.tell()
+                    print("Wrote", humanize.naturalsize(compressed_data.tell()), "bytes for trie", key)
             f.write(b'\x00')  # End of tries marker
 
             print("Wrote", humanize.naturalsize(self.write_counter), "bytes for tries")
@@ -222,35 +258,62 @@ class JoeDB:
             for key, column in self.columns.items():
                 print("Writing column", key)
                 self.write_counter = 0
-                rename_map = rename_maps[key]
-                column = [rename_map.get(value, value) for value in column]
-                rle_encoded = run_length_encode(column)
-                # print(ppretty(rle_encoded, depth=10))
-                max_value = max(column)
-                max_length = max(rle_encoded, key=lambda x: x[1])[1]
-                value_byte_size = (max_value.bit_length() + 7) // 8
-                length_byte_size = (max_length.bit_length() + 7) // 8
-                print("Value byte size:", value_byte_size)
-                print("Length byte size:", length_byte_size)
-                f.write(struct.pack('B', value_byte_size))  # TODO: This can be calculated from the tree, remove
-                f.write(struct.pack('B', length_byte_size))  # Write byte size for RLE values
-
-                # Compress the RLE data using gzip
                 compressed_data = io.BytesIO()
-                with pyzstd.ZstdFile(filename=compressed_data, mode='wb') as gz:
-                    for value, length in rle_encoded:
-                        gz.write(value.to_bytes(value_byte_size, byteorder='big'))
-                        gz.write(length.to_bytes(length_byte_size, byteorder='big'))
-                # Get the compressed data and write its length
-                compressed_bytes = compressed_data.getvalue()
-                f.write(struct.pack('>I', len(compressed_bytes)))  # Write 4-byte compressed length
-                f.write(compressed_bytes)  # Write compressed data
+                if self.column_types[key] == self.TYPE_STRING:
+                    rename_map = rename_maps[key]
+                    column = [rename_map.get(value, value) for value in column]
+                    rle_encoded = run_length_encode(column)
+                    # print(ppretty(rle_encoded, depth=10))
+                    max_value = max(column)
+                    max_length = max(rle_encoded, key=lambda x: x[1])[1]
+                    value_byte_size = (max_value.bit_length() + 7) // 8
+                    length_byte_size = (max_length.bit_length() + 7) // 8
+                    print("Value byte size:", value_byte_size)
+                    print("Length byte size:", length_byte_size)
+                    f.write(struct.pack('B', value_byte_size))  # TODO: This can be calculated from the tree, remove
+                    f.write(struct.pack('B', length_byte_size))  # Write byte size for RLE values
 
+                    # Compress the RLE data using gzip
+                    with pyzstd.ZstdFile(filename=compressed_data, mode='wb', level_or_option=COMPRESSION_LEVEL) as gz:
+                        for value, length in rle_encoded:
+                            gz.write(value.to_bytes(value_byte_size, byteorder='big'))
+                            gz.write(length.to_bytes(length_byte_size, byteorder='big'))
+                    # Get the compressed data and write its length
+                    compressed_bytes = compressed_data.getvalue()
+                    f.write(struct.pack('>I', len(compressed_bytes)))  # Write 4-byte compressed length
+                    f.write(compressed_bytes)  # Write compressed data
+                else:
+                    # Delta + RLE encoding for number columns
+                    delta_encoded = [int(column[0])]
+                    for i in range(1, len(column)):
+                        delta_encoded.append(int(column[i]) - int(column[i - 1]))
 
-#                for value, length in rle_encoded:
-#                    f.write(value.to_bytes(value_byte_size, byteorder='big'))
-#                    f.write(length.to_bytes(length_byte_size, byteorder='big'))
-#                    self.write_counter += value_byte_size + length_byte_size
+                    rle_encoded = run_length_encode(delta_encoded)
+                    max_value = max(delta_encoded, key=abs)
+                    value_byte_size = (max_value.bit_length() + 8) // 8
+
+                    # calculate leading zeros per value
+                    leading_zeros = [len(str(value)) - len(str(value).lstrip('0')) for value in column]
+
+                    max_length = max(rle_encoded, key=lambda x: x[1])[1]
+                    length_byte_size = (max_length.bit_length() + 7) // 8
+                    print("Value byte size:", value_byte_size)
+                    print("Length byte size:", length_byte_size)
+
+                    f.write(struct.pack('B', value_byte_size))
+                    f.write(struct.pack('B', length_byte_size))
+
+                    with pyzstd.ZstdFile(filename=compressed_data, mode='wb', level_or_option=COMPRESSION_LEVEL) as gz:
+                        for value, length in rle_encoded:
+                            gz.write(value.to_bytes(value_byte_size, byteorder='big', signed=True))
+                            gz.write(length.to_bytes(length_byte_size, byteorder='big'))
+                            if self.column_types[key] == self.TYPE_NUMBER:
+                                # TODO: This scheme doesn't work - leading zeros don't necessarily share the same runs as the values
+                                leading_zero_count = leading_zeros.pop(0)
+                                gz.write(leading_zero_count.to_bytes(1, byteorder='big'))
+                    compressed_bytes = compressed_data.getvalue()
+                    f.write(struct.pack('>I', len(compressed_bytes)))
+                    f.write(compressed_bytes)
                 print("Wrote", humanize.naturalsize(compressed_data.tell()), "bytes for column", key)
 
     def _write_trie(self, f, node):
@@ -275,44 +338,87 @@ class JoeDB:
             self.tries = {}
             self.trie_value_maps: dict[str, dict[int, str]] = {}
             while True:
-                key = self._read_null_terminated_string(f)
-                if not key:  # End of tries marker
+                column_type = f.read(1)
+                if column_type == b'\x00':
                     break
-                self.tries[key] = Trie()
-                compressed_length = struct.unpack('>I', f.read(4))[0]  # Read 4-byte compressed length
-                compressed_data = f.read(compressed_length)  # Read the compressed column data
+                column_type = column_type[0]
 
-                with pyzstd.ZstdFile(filename=io.BytesIO(compressed_data), mode='rb') as gz:
-                  self._read_trie(gz, self.tries[key].root, self.tries[key])
+                key = self._read_null_terminated_string(f)
+                self.column_types[key] = column_type
 
-                # Build hashmap for fast index lookup
-                self.trie_value_maps[key] = {}
-                self._build_trie_value_map(self.tries[key].root, '', self.trie_value_maps[key])
+                self.columns[key] = []
+                if column_type == self.TYPE_STRING:
+                    self.tries[key] = Trie()
+                    compressed_length = struct.unpack('>I', f.read(4))[0]  # Read 4-byte compressed length
+                    compressed_data = f.read(compressed_length)  # Read the compressed column data
+
+                    with pyzstd.ZstdFile(filename=io.BytesIO(compressed_data), mode='rb') as gz:
+                        self._read_trie(gz, self.tries[key].root, self.tries[key])
+
+                    # Build hashmap for fast index lookup
+                    self.trie_value_maps[key] = {}
+                    self._build_trie_value_map(self.tries[key].root, '', self.trie_value_maps[key])
 
                 # ============ PRINT:THE:TREE ================
                 # print(ppretty(self.tries[key].root, depth=20))
 
             # Read columns
-            self.columns = {key: [] for key in self.tries}
-            for key in self.tries:
-                value_byte_size = struct.unpack('B', f.read(1))[0]  # TODO: This can be calculated from the tree, remove
-                length_byte_size = struct.unpack('B', f.read(1))[0]
-#                column_data = []
-#                while len(column_data) < record_count:
-#                    value = int.from_bytes(f.read(value_byte_size), byteorder='big')
-#                    length = int.from_bytes(f.read(length_byte_size), byteorder='big')
-#                    column_data.extend([value] * length)
-#                self.columns[key] = column_data
-                compressed_length = struct.unpack('>I', f.read(4))[0]  # Read 4-byte compressed length
-                compressed_data = f.read(compressed_length)  # Read the compressed column data
+            for key in self.columns:
+                if self.column_types[key] == self.TYPE_STRING:
+                    value_byte_size = struct.unpack('B', f.read(1))[0]  # TODO: This can be calculated from the tree, remove
+                    length_byte_size = struct.unpack('B', f.read(1))[0]
+    #                column_data = []
+    #                while len(column_data) < record_count:
+    #                    value = int.from_bytes(f.read(value_byte_size), byteorder='big')
+    #                    length = int.from_bytes(f.read(length_byte_size), byteorder='big')
+    #                    column_data.extend([value] * length)
+    #                self.columns[key] = column_data
+                    compressed_length = struct.unpack('>I', f.read(4))[0]  # Read 4-byte compressed length
+                    compressed_data = f.read(compressed_length)  # Read the compressed column data
 
-                with pyzstd.ZstdFile(filename=io.BytesIO(compressed_data), mode='rb') as gz:
+                    with pyzstd.ZstdFile(filename=io.BytesIO(compressed_data), mode='rb') as gz:
+                        column_data = []
+                        while len(column_data) < record_count:
+                            value = int.from_bytes(gz.read(value_byte_size), byteorder='big')
+                            length = int.from_bytes(gz.read(length_byte_size), byteorder='big')
+                            column_data.extend([value] * length)
+                        self.columns[key] = column_data
+                else:
+                    # Read value/length byte sizes
+                    value_byte_size = struct.unpack('B', f.read(1))[0]
+                    length_byte_size = struct.unpack('B', f.read(1))[0]
+
+                    compressed_length = struct.unpack('>I', f.read(4))[0]
+                    compressed_data = f.read(compressed_length)
+
                     column_data = []
-                    while len(column_data) < record_count:
-                        value = int.from_bytes(gz.read(value_byte_size), byteorder='big')
-                        length = int.from_bytes(gz.read(length_byte_size), byteorder='big')
-                        column_data.extend([value] * length)
-                    self.columns[key] = column_data
+                    leading_zeros = []
+                    with pyzstd.ZstdFile(filename=io.BytesIO(compressed_data), mode='rb') as gz:
+                        while len(column_data) < record_count:
+                            value = int.from_bytes(gz.read(value_byte_size), byteorder='big', signed=True)
+                            length = int.from_bytes(gz.read(length_byte_size), byteorder='big')
+                            column_data.extend([value] * length)
+                            if self.column_types[key] == self.TYPE_NUMBER:
+                                leading_zeros.extend([int.from_bytes(gz.read(1), byteorder='big')] * length)
+                    
+
+                    # Decode deltas
+                    decoded_column = [column_data[0]]
+                    # if column_data[0] == 0:
+                        # remove one leading zeros, because it got encoded in the column
+                        # leading_zeros[0] = leading_zeros[0] - 1
+                    for i in range(1, len(column_data)):
+                        new_val = decoded_column[-1] + column_data[i]
+                        decoded_column.append(new_val)
+                        # if new_val == 0:
+                            # remove one leading zeros, because it got encoded in the column
+                           # leading_zeros[i] = leading_zeros[i] - 1
+                    # convert to stream and add leading zeros
+                    if self.column_types[key] == self.TYPE_NUMBER:
+                        self.columns[key] = [str(decoded_column[i]).zfill(leading_zeros[i] + len(str(decoded_column[i]))) for i in range(len(decoded_column))]
+                    elif self.column_types[key] == self.TYPE_TIMESTAMP:
+                        self.columns[key] = [datetime.datetime.fromtimestamp(decoded_column[i], datetime.UTC).isoformat() for i in range(len(decoded_column))]
+
 
            # Split out CLP columns (start with var_)
             clp_columns = {key: self.columns[key] for key in self.columns if key.startswith('var_')}
@@ -324,7 +430,7 @@ class JoeDB:
             for i in range(record_count):
                 json_object = {}
                 # Get clp values for the current record
-                clp_values = {key: self.trie_value_maps[key].get(column[i], None) for key, column in clp_columns.items()}
+                clp_values = {key: self.trie_value_maps[key].get(column[i], None) if self.column_types[key] == self.TYPE_STRING else str(column[i]) for key, column in clp_columns.items()}
                 for key, column in real_columns.items():
                     value_index = column[i]
                     if value_index != 0:  # Zero means no value
