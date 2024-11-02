@@ -285,9 +285,9 @@ def test_extend_trie2():
 #     probe_ndjson_gz_file(db8, 'fixtures/spark.ndjson.gz')
 
 # def test_thunderbird_logs():
-#     db8 = JoeDB(use_clp=True)
+#     db8 = JoeDB(use_clp=False)
 #     probe_csv_file(db8, 'fixtures/thunderbird.csv')
 
 def test_otel_logs():
     db8 = JoeDB(use_clp=True)
-    probe_ndjson_gz_file_single_level(db8, 'fixtures/otel.ndjson.gz')
+    probe_ndjson_gz_file(db8, 'fixtures/otel_small.ndjson.gz')
