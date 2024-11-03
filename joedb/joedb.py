@@ -1,7 +1,7 @@
 import datetime
 import struct
 from ppretty import ppretty
-from .clp import extract_pattern, rehydrate_message
+from .patternization import extract_pattern, rehydrate_message
 import pyzstd
 import humanize
 import io
@@ -156,12 +156,12 @@ class JoeDB:
     TYPE_TIMESTAMP = 0x03  # Column type byte for number columns
 
 
-    def __init__(self, use_clp=True):
+    def __init__(self, use_patternization=True):
         self.columns = {}
         self.column_types = {}
         self.tries: dict[str, Trie] = {}
         self.record_count = 0
-        self.use_clp = use_clp
+        self.use_patternization = use_patternization
 
     def insert(self, json_object):
         """Insert a JSON object into the database."""
@@ -169,7 +169,7 @@ class JoeDB:
         keys = set(flat_data.keys())
 
         for key, value in flat_data.items():
-            pattern, vars = extract_pattern(value, key) if self.use_clp else (value, {})
+            pattern, vars = extract_pattern(value, key) if self.use_patternization else (value, {})
             # actual columns are key plus the keys of the vars object
             local_keys = [key] + list(vars.keys())
             keys.update(local_keys)
@@ -420,8 +420,8 @@ class JoeDB:
                         self.columns[key] = [datetime.datetime.fromtimestamp(decoded_column[i], datetime.UTC).isoformat() for i in range(len(decoded_column))]
 
 
-           # Split out CLP columns (start with var_)
-            clp_columns = {key: self.columns[key] for key in self.columns if key.startswith('var_')}
+           # Split out pattern columns (start with var_)
+            pattern_columns = {key: self.columns[key] for key in self.columns if key.startswith('var_')}
             real_columns = {key: self.columns[key] for key in self.columns if not key.startswith('var_')}
             
 
@@ -429,13 +429,13 @@ class JoeDB:
             json_objects = []
             for i in range(record_count):
                 json_object = {}
-                # Get clp values for the current record
-                clp_values = {key: self.trie_value_maps[key].get(column[i], None) if self.column_types[key] == self.TYPE_STRING else str(column[i]) for key, column in clp_columns.items()}
+                # Get pattern values for the current record
+                pattern_values = {key: self.trie_value_maps[key].get(column[i], None) if self.column_types[key] == self.TYPE_STRING else str(column[i]) for key, column in pattern_columns.items()}
                 for key, column in real_columns.items():
                     value_index = column[i]
                     if value_index != 0:  # Zero means no value
                         value = self.trie_value_maps[key].get(value_index, None)
-                        value = rehydrate_message(value, clp_values) if value else value
+                        value = rehydrate_message(value, pattern_values) if value else value
 
                         # Resolve dots to nested objects
                         [*parts, key] = key.split('.')

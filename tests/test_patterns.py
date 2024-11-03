@@ -1,4 +1,4 @@
-from joedb.clp import extract_pattern
+from joedb.patternization import extract_pattern
 
 
 def test_extract_simple_log_message():

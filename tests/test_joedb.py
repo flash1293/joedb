@@ -221,8 +221,10 @@ def probe_ndjson_gz_file_single_level(db, ndjson_file_path):
     """
     # Read the NDJSON file using pandas
     df = pd.read_json(ndjson_file_path, lines=True)
+    df = df.astype(str)
+    df = df.sort_values(by=['resource', '@timestamp'])
     # Convert each row to a dictionary
-    log_entries = df.astype(str).to_dict(orient='records')
+    log_entries = df.to_dict(orient='records')
 
     insert_and_round_trip(db, log_entries)
 
@@ -275,22 +277,22 @@ def test_extend_trie2():
 #     log_entries7 = [{"timestamp": f"2024-10-19T14:{i:02d}:00", "level": "INFO", "message": f"Log message"} for i in range(1000)]
 #     insert_and_round_trip(db7, log_entries7)
 
-# def test_zookeeper_clp_logs():
-#     db8 = JoeDB(use_clp=True)
+# def test_zookeeper_pattern_logs():
+#     db8 = JoeDB(use_patternization=True)
 #     probe_csv_file(db8, 'fixtures/zookeeper.csv')
 
-# def test_zookeeper_no_clp_logs():
-#     db8 = JoeDB(use_clp=False)
+# def test_zookeeper_no_patternlogs():
+#     db8 = JoeDB(use_patternization=False)
 #     probe_csv_file(db8, 'fixtures/zookeeper.csv')
 
-# def test_spark_no_clp_logs():
-#     db8 = JoeDB(use_clp=False)
+# def test_spark_no_pattern_logs():
+#     db8 = JoeDB(use_patternization=False)
 #     probe_ndjson_gz_file(db8, 'fixtures/spark.ndjson.gz')
 
 # def test_thunderbird_logs():
-#     db8 = JoeDB(use_clp=False)
+#     db8 = JoeDB(use_patternization=False)
 #     probe_csv_file(db8, 'fixtures/thunderbird.csv')
 
 def test_otel_logs():
-    db8 = JoeDB(use_clp=True)
-    probe_ndjson_gz_file(db8, 'fixtures/otel_small.ndjson.gz')
+    db8 = JoeDB(use_patternization=True)
+    probe_ndjson_gz_file_single_level(db8, 'fixtures/otel.ndjson.gz')
