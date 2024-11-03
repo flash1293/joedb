@@ -138,3 +138,13 @@ This shows a few things:
 * Obviously storing values like numbers and timestamps in a suitable format helps a lot
 * The patternization helps itself pulling stuff into separate columns that belong in separate columns
 * Columnarization doesn't _always_ help - treating each value in resource separately actual makes compression worse because they are already extremely correlated and pulling them into different columns forces us to encode the same order of values multiple times. Keeping it together allows to just store this order of values once.
+
+Next steps:
+* Clean up the code base
+* Support all of JSON
+* Don't hardcode sorting, instead collect statistics during the insert phase and reshuffle during the encoding phase
+  * We need some heuristic to decide on the sorting
+  * During "insert", run a hyperloglog on each field to estimate cardinality
+  * Sort by all fields, starting with those with the lowest cardinality, moving up
+
+Think about whether we can do a similar thing to re-correlate columns - not sure how to find good candidate-columns
