@@ -140,11 +140,23 @@ This shows a few things:
 * Columnarization doesn't _always_ help - treating each value in resource separately actual makes compression worse because they are already extremely correlated and pulling them into different columns forces us to encode the same order of values multiple times. Keeping it together allows to just store this order of values once.
 
 Next steps:
-* Clean up the code base
-* Support all of JSON
 * Don't hardcode sorting, instead collect statistics during the insert phase and reshuffle during the encoding phase
   * We need some heuristic to decide on the sorting
   * During "insert", run a hyperloglog on each field to estimate cardinality
   * Sort by all fields, starting with those with the lowest cardinality, moving up
 
-Think about whether we can do a similar thing to re-correlate columns - not sure how to find good candidate-columns
+Think about whether we can do a similar thing to re-correlate columns - not sure how to find good candidate-columns.
+
+
+Implementing the heuristic for sorting from above gives
+881kb - slightly worse than the good known sorting:
+
+Ordered columns: ['@timestamp', 'data_stream', 'dropped_attributes_count', 'var_dropped_attributes_count_0_number', 'observed_timestamp', 'var_resource_0_number', 'var_resource_0_hex', 'var_resource_1_number', 'var_resource_2_number', 'var_resource_3_number', 'var_resource_4_number', 'var_resource_5_number', 'var_resource_1_hex', 'var_resource_2_hex', 'scope', 'var_scope_0_number', 'severity_number', 'var_severity_number_0_number', 'var_body_text_0_time', 'var_attributes_1_number', 'var_resource_3_hex', 'var_attributes_0_number', 'var_attributes_0_timestamp', 'var_attributes_3_hex', 'var_resource_0_timestamp', 'var_attributes_2_hex', 'var_attributes_0_hex', 'var_attributes_1_hex', 'attributes', 'resource', 'var_body_text_2_number', 'var_body_text_9_number', 'var_body_text_7_number', 'var_body_text_8_number', 'var_body_text_1_number', 'var_body_text_0_timestamp', 'var_body_text_3_number', 'var_body_text_6_number', 'var_body_text_0_number', 'var_body_text_4_hex', 'var_body_text_2_hex', 'var_body_text_3_hex', 'var_body_text_1_hex', 'var_body_text_0_hex', 'var_body_text_4_number', 'var_body_text_5_number', 'body_text', 'var_@timestamp_0_timestamp', 'var_observed_timestamp_0_timestamp']
+
+No sorting at all gives 1.3MB, so the heuristic-based sorting is actually pretty good.
+
+Next steps:
+* Clean up the code base
+* Fix existing bugs with leading zeros missing and broken timestamp formats
+* Make tests work again
+* Support all of JSON

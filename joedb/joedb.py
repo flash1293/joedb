@@ -5,6 +5,7 @@ from .patternization import extract_pattern, rehydrate_message
 import pyzstd
 import humanize
 import io
+import hyperloglog
 
 
 class TrieNode:
@@ -159,6 +160,7 @@ class JoeDB:
     def __init__(self, use_patternization=True):
         self.columns = {}
         self.column_types = {}
+        self.cardinality = {}
         self.tries: dict[str, Trie] = {}
         self.record_count = 0
         self.use_patternization = use_patternization
@@ -178,6 +180,7 @@ class JoeDB:
                 is_timestamp_column = False if local_key not in self.column_types else self.column_types[local_key] == self.TYPE_TIMESTAMP
                 if local_key not in self.columns:
                     self.columns[local_key] = []
+                    self.cardinality[local_key] = hyperloglog.HyperLogLog(0.01)
                     self.columns[local_key].extend([0] * self.record_count)
                     # a number column key always starts with var_ and ends with _number<int>
                     is_timestamp_column = local_key.startswith('var_') and local_key.endswith('_timestamp')
@@ -202,6 +205,7 @@ class JoeDB:
                     # Directly store number for delta encoding
                     index = local_value
                 self.columns[local_key].append(index)
+                self.cardinality[local_key].add(local_value)
 
         for key in self.columns:
             if not key in keys:
@@ -230,6 +234,26 @@ class JoeDB:
             # print(ppretty(self.tries, depth=20))
 
             rename_maps = {key: trie.rename_indices() for key, trie in self.tries.items()}
+
+            # Order all columns by cardinality
+            ordered_columns =  sorted(self.columns.keys(), key=lambda x: len(self.cardinality[x]))
+            print("Ordered columns:", ordered_columns)
+
+
+            # join all the columns back into records
+            records = []
+            for i in range(self.record_count):
+                record = {}
+                for key in ordered_columns:
+                    record[key] = self.columns[key][i]
+                records.append(record)
+            
+            # order the records by all the columns in order of cardinality
+            records = sorted(records, key=lambda x: tuple(str(x[key]) for key in ordered_columns))
+
+            # put the records back into the columns
+            for key in self.columns:
+                self.columns[key] = [record[key] for record in records]
 
             # Write the tries
             for key, column in self.columns.items():

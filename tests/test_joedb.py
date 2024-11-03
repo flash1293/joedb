@@ -222,7 +222,7 @@ def probe_ndjson_gz_file_single_level(db, ndjson_file_path):
     # Read the NDJSON file using pandas
     df = pd.read_json(ndjson_file_path, lines=True)
     df = df.astype(str)
-    df = df.sort_values(by=['resource', '@timestamp'])
+    # df = df.sort_values(by=['resource', '@timestamp'])
     # Convert each row to a dictionary
     log_entries = df.to_dict(orient='records')
 

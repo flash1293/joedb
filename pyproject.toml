@@ -9,6 +9,7 @@ readme = "README.md"
 python = "^3.13"
 pyzstd = "^0.16.2"
 humanize = "^4.11.0"
+hyperloglog = "^0.0.14"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
