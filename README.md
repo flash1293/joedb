@@ -160,3 +160,38 @@ Next steps:
 * Fix existing bugs with leading zeros missing and broken timestamp formats
 * Make tests work again
 * Support all of JSON
+
+# More thoughts
+
+Real world messy datasets can have a large number of different fields - JoeDB should support dealing with arbitrary amounts of fields.
+
+To do this, the field names itself should also be stored in a trie with attached values at the beginning of the file, pointing to the offsets of their value tries. This makes large amounts of fields much cheaper to store, but having a separate column for each of them is not efficient for sparse fields (which is likely if there are a lot of them). To handle this kind of fields better, there should be a special sparse encoding that keeps a trie of possible values with a posting list of records that match a value.
+
+Binary format of the trie with offset value:
+  * Trie (in depth-first search):
+    * 4 bytes for the length of gzip compressed data
+    * Gzip-compressed data:
+      * Node (id is just increment, starting with 1):
+        * 0-terminated utf8 string of the prefix
+        * Offset in 4 bytes
+        * Number of children in 1 bytes
+        * Children
+      * One zero byte to mark end of each trie
+
+Binary format of the trie with posting list:
+  * Trie (in depth-first search):
+    * 4 bytes for the length of gzip compressed data
+    * Gzip-compressed data:
+      * Node (id is just increment, starting with 1):
+        * 0-terminated utf8 string of the prefix
+        * 1 byte for the length of the posting list (if there are more than 255 records, posting list is not used, but a regular column)
+        * Posting list with record ids in as many bytes as required for the number of records
+        * Number of children in 1 bytes
+        * Children
+      * One zero byte to mark end of each trie
+
+In the encoding step, the posting list format is chosen if there are less than 255 records that have a value for the field. I need to think about whether we can be even smarter with this.
+
+In the extreme case, each field occurs only once and the actual value is in the key name. In this case, the keys are encoded in one big trie which can still do a decent job at compressing the data. The values are in random places which won't be super cheap to read.
+
+In general, I should reconsider the tries - they don't deal well with the search use case because the whole trie has to be decoded to search on it which is pretty expensive. Splitting up the trie could help with this - store the first 3 layers or so and point to the sub-tries from there. During search, only parts of the trie need to be decoded. However, this will probably hurt compression in case there are similarities between branches of the tries which is pretty likely. I'm sure there is a well known data structure like I have in mind, but I'm not sure which one.
