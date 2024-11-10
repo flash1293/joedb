@@ -132,6 +132,7 @@ Working the full 100k row otel dataset and applying domain knowledge for the sor
 * Raw columnar CSV file size: 163.0 MB
 * Zstd-compressed columnar CSV file size (lvl 15): 1.5 MB
 * Parquet file size: 1.7 MB
+* Testing with Clickhouse gives roughly 4 MB by default, but I didn't spend a lot of time tweaking the default settings. Difference to logs db is at most small.
 
 This shows a few things:
 * Sorting is super important to get good compression. We need to make sure we always sort well. We can probably make this adaptive
